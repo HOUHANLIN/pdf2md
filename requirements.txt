@@ -1,0 +1,4 @@
+pdfplumber
+pdf2image
+Pillow
+requests
