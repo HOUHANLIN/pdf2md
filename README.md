@@ -173,6 +173,7 @@ python pdf_to_markdown.py input.pdf --dry-run
 - `--continue-on-error` 遇到单页失败继续执行。
 - `--log-level` 控制日志级别（`INFO`/`WARNING`/`ERROR`/`DEBUG`）。
 - `--quiet` 仍会抑制大部分进度输出，仅保留告警与错误。
+- 日志默认包含任务计划与 OCR 进度，便于观察长任务状态。
 
 完整参数请运行：
 

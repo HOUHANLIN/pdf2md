@@ -2140,26 +2140,25 @@ def pdf_to_markdown(
                 ocr_pages.append(page_number)
                 plan_by_page[page_number] = "ocr"
 
+            text_plan = sum(1 for method in plan_by_page.values() if method == "text")
+            ocr_plan = sum(1 for method in plan_by_page.values() if method == "ocr")
+            cached_plan = sum(
+                1 for method in plan_by_page.values() if method == "cached"
+            )
+            logger.info(
+                "Plan ready: pages=%d, text=%d, ocr=%d, cached=%d",
+                len(selected_pages),
+                text_plan,
+                ocr_plan,
+                cached_plan,
+            )
+
             if dry_run:
-                text_pages = sum(
-                    1 for method in plan_by_page.values() if method == "text"
-                )
-                ocr_plan = sum(1 for method in plan_by_page.values() if method == "ocr")
-                cached_pages = sum(
-                    1 for method in plan_by_page.values() if method == "cached"
-                )
-                logger.info(
-                    "Dry run summary: pages=%d, text=%d, ocr=%d, cached=%d",
-                    len(selected_pages),
-                    text_pages,
-                    ocr_plan,
-                    cached_pages,
-                )
                 for page_number in selected_pages:
                     method = plan_by_page.get(page_number, "skip")
                     print(f"Page {page_number}: {method}")
                 print(
-                    f"Summary: pages={len(selected_pages)}, text={text_pages}, ocr={ocr_plan}, cached={cached_pages}"
+                    f"Summary: pages={len(selected_pages)}, text={text_plan}, ocr={ocr_plan}, cached={cached_plan}"
                 )
                 if ocr_plan and not providers:
                     print("Warning: OCR needed but no API key configured.")
@@ -2362,11 +2361,13 @@ def pdf_to_markdown(
                     future_to_page = {
                         executor.submit(ocr_worker, page): page for page in ocr_pages
                     }
+                    completed_pages = 0
                     for future in as_completed(future_to_page):
                         page_number = future_to_page[future]
                         try:
                             stat = future.result()
                             stats_by_page[page_number] = stat
+                            completed_pages += 1
                             if not quiet:
                                 if stat.method == "error":
                                     print(
@@ -2386,6 +2387,11 @@ def pdf_to_markdown(
                                     page_number,
                                     stat.seconds,
                                 )
+                            logger.info(
+                                "OCR progress: %d/%d pages",
+                                completed_pages,
+                                len(ocr_pages),
+                            )
                         except Exception as exc:
                             error_message = str(exc)
                             if not continue_on_error:
@@ -2405,6 +2411,12 @@ def pdf_to_markdown(
                                 print(f"OCR page {page_number} failed: {error_message}")
                             logger.error(
                                 "OCR page %d failed: %s", page_number, error_message
+                            )
+                            completed_pages += 1
+                            logger.info(
+                                "OCR progress: %d/%d pages",
+                                completed_pages,
+                                len(ocr_pages),
                             )
 
         raw_pages = {
@@ -2456,6 +2468,7 @@ def pdf_to_markdown(
                 stats_by_page[page_number].warning = warning
 
         if merge_output:
+            logger.info("Writing merged output to %s", out_path)
             merge_pages(
                 out_path=out_path,
                 title=title,
@@ -2468,6 +2481,7 @@ def pdf_to_markdown(
             )
 
         if per_page_dir:
+            logger.info("Writing per-page output to %s", per_page_dir)
             for page_number in selected_pages:
                 content = cleaned_pages.get(page_number, "")
                 write_per_page_output(
