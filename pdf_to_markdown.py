@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import logging
 import math
 import os
 import re
@@ -50,6 +51,29 @@ DEFAULT_CACHE_DIRNAME = ".pdf_to_markdown_cache"
 SCRIPT_VERSION = "0.4.0"
 
 END_PUNCT = ".?!;:" + "\u3002\uff01\uff1f\uff1b\uff1a"
+
+LOG_LEVELS = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+}
+
+
+def configure_logging(quiet: bool, log_level: str) -> None:
+    logger = logging.getLogger("pdf_to_markdown")
+    if logger.handlers:
+        return
+
+    handler = logging.StreamHandler(sys.stdout)
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.propagate = False
+    if quiet:
+        logger.setLevel(logging.WARNING)
+    else:
+        logger.setLevel(LOG_LEVELS.get(log_level.upper(), logging.INFO))
 
 
 @dataclass
@@ -1965,6 +1989,7 @@ def pdf_to_markdown(
     if not pdf_path.exists():
         raise FileNotFoundError(str(pdf_path))
 
+    logger = logging.getLogger("pdf_to_markdown")
     start_time = time.monotonic()
     start_iso = now_iso()
 
@@ -1990,6 +2015,7 @@ def pdf_to_markdown(
         render_pool = ProcessPoolExecutor(max_workers=render_workers)
 
     try:
+        logger.info("Starting conversion for %s", pdf_path)
         with pdfplumber.open(str(pdf_path)) as pdf:
             total_pages = len(pdf.pages)
             width = max(len(str(total_pages)), 2)
@@ -1998,8 +2024,16 @@ def pdf_to_markdown(
                 raise RuntimeError(
                     "No pages selected. Check --pages/--skip-pages options."
                 )
+            logger.info(
+                "Selected %d/%d pages (mode=%s, workers=%d)",
+                len(selected_pages),
+                total_pages,
+                mode,
+                ocr_workers,
+            )
 
             if remove_hf and hf_use_layout:
+                logger.info("Detecting headers/footers with layout heuristics")
                 header_sigs, footer_sigs = detect_headers_footers_with_layout(
                     pdf,
                     selected_pages,
@@ -2056,6 +2090,7 @@ def pdf_to_markdown(
                 need_text = mode in ("auto", "text") or auto_lang
                 text = ""
                 if need_text:
+                    logger.info("Extracting text for page %d", page_number)
                     page_start = time.monotonic()
                     text = extract_text_page(pdf, page_number - 1)
                     precheck_seconds[page_number] = time.monotonic() - page_start
@@ -2113,6 +2148,13 @@ def pdf_to_markdown(
                 cached_pages = sum(
                     1 for method in plan_by_page.values() if method == "cached"
                 )
+                logger.info(
+                    "Dry run summary: pages=%d, text=%d, ocr=%d, cached=%d",
+                    len(selected_pages),
+                    text_pages,
+                    ocr_plan,
+                    cached_pages,
+                )
                 for page_number in selected_pages:
                     method = plan_by_page.get(page_number, "skip")
                     print(f"Page {page_number}: {method}")
@@ -2130,6 +2172,7 @@ def pdf_to_markdown(
                 )
 
             if ocr_pages and table_mode != "off" and table_extractor.available():
+                logger.info("Attempting table extraction for %d pages", len(ocr_pages))
                 remaining_pages: List[int] = []
                 for page_number in ocr_pages:
                     table_start = time.monotonic()
@@ -2174,6 +2217,12 @@ def pdf_to_markdown(
             if ocr_pages:
                 rate_limiter = RateLimiter(ocr_rps) if ocr_rps > 0 else None
                 workers = max(1, min(ocr_workers, len(ocr_pages)))
+                logger.info(
+                    "Running OCR on %d pages (workers=%d, rps=%.2f)",
+                    len(ocr_pages),
+                    workers,
+                    ocr_rps,
+                )
 
                 def run_ocr_with_dpi(
                     page_number: int, dpi_value: int
@@ -2327,6 +2376,16 @@ def pdf_to_markdown(
                                     print(
                                         f"OCR page {page_number} done in {stat.seconds:.1f}s"
                                     )
+                            if stat.method == "error":
+                                logger.error(
+                                    "OCR page %d failed: %s", page_number, stat.error
+                                )
+                            else:
+                                logger.info(
+                                    "OCR page %d done in %.1fs",
+                                    page_number,
+                                    stat.seconds,
+                                )
                         except Exception as exc:
                             error_message = str(exc)
                             if not continue_on_error:
@@ -2344,6 +2403,9 @@ def pdf_to_markdown(
                             stats_by_page[page_number] = stat
                             if not quiet:
                                 print(f"OCR page {page_number} failed: {error_message}")
+                            logger.error(
+                                "OCR page %d failed: %s", page_number, error_message
+                            )
 
         raw_pages = {
             page: read_page_cache(cache_dir, page, width) for page in selected_pages
@@ -2453,6 +2515,12 @@ def pdf_to_markdown(
             if per_page_dir:
                 print(f"Per-page output: {per_page_dir}")
             print(f"Cache: {cache_dir}")
+        logger.info(
+            "Completed conversion in %.1fs (pages=%d, errors=%d)",
+            elapsed_total,
+            len(selected_pages),
+            len(error_pages),
+        )
 
         if stats_out:
             stats_out.parent.mkdir(parents=True, exist_ok=True)
@@ -3050,12 +3118,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="List planned page strategies and exit"
     )
     parser.add_argument("--quiet", action="store_true", help="Suppress progress output")
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=sorted(LOG_LEVELS.keys()),
+        help="Log verbosity for progress output",
+    )
     return parser
 
 
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+
+    configure_logging(args.quiet, args.log_level)
 
     pdf_path = Path(args.pdf)
     out_path = Path(args.out) if args.out else pdf_path.with_suffix(".md")
