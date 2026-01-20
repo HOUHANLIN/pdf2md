@@ -51,6 +51,68 @@ SCRIPT_VERSION = "0.4.0"
 
 END_PUNCT = ".?!;:" + "\u3002\uff01\uff1f\uff1b\uff1a"
 
+PRESET_CONFIGS = {
+    "fast-text": {
+        "mode": "text",
+        "postprocess": True,
+        "remove_hf": True,
+        "dehyphenate": True,
+        "reflow": True,
+    },
+    "balanced-ocr": {
+        "mode": "auto",
+        "adaptive_dpi": True,
+        "ocr_quality": True,
+        "preprocess": True,
+    },
+    "scan-ocr": {
+        "mode": "ocr",
+        "adaptive_dpi": True,
+        "dpi": 350,
+        "dpi_high": 500,
+        "preprocess": True,
+        "denoise": True,
+        "binarize": True,
+        "deskew": True,
+    },
+    "table-heavy": {
+        "mode": "auto",
+        "table_mode": "auto",
+        "table_backend": "auto",
+        "table_flavor": "lattice",
+    },
+    "economy": {
+        "mode": "auto",
+        "ocr_workers": 1,
+        "ocr_rps": 1.0,
+        "max_retries": 2,
+        "page_retries": 1,
+    },
+}
+
+PRESET_FLAG_MAP = {
+    "mode": ["--mode"],
+    "postprocess": ["--postprocess", "--no-postprocess"],
+    "remove_hf": ["--remove-hf", "--no-remove-hf"],
+    "dehyphenate": ["--dehyphenate", "--no-dehyphenate"],
+    "reflow": ["--reflow", "--no-reflow"],
+    "adaptive_dpi": ["--adaptive-dpi", "--no-adaptive-dpi"],
+    "ocr_quality": ["--ocr-quality", "--no-ocr-quality"],
+    "preprocess": ["--preprocess", "--no-preprocess"],
+    "dpi": ["--dpi"],
+    "dpi_high": ["--dpi-high"],
+    "denoise": ["--denoise", "--no-denoise"],
+    "binarize": ["--binarize", "--no-binarize"],
+    "deskew": ["--deskew", "--no-deskew"],
+    "table_mode": ["--table-mode"],
+    "table_backend": ["--table-backend"],
+    "table_flavor": ["--table-flavor"],
+    "ocr_workers": ["--ocr-workers"],
+    "ocr_rps": ["--ocr-rps"],
+    "max_retries": ["--max-retries"],
+    "page_retries": ["--page-retries"],
+}
+
 
 @dataclass
 class PageStat:
@@ -200,6 +262,96 @@ def parse_models(primary: str, fallback: Optional[str]) -> List[str]:
         models = [DEFAULT_MODEL]
     models.extend(split_csv(fallback))
     return unique_list(models)
+
+
+def argv_has_flag(flag_names: Iterable[str]) -> bool:
+    for token in sys.argv[1:]:
+        if token in flag_names:
+            return True
+        for name in flag_names:
+            if token.startswith(f"{name}="):
+                return True
+    return False
+
+
+def apply_preset(args: argparse.Namespace, preset: str) -> None:
+    config = PRESET_CONFIGS.get(preset, {})
+    for key, value in config.items():
+        flag_names = PRESET_FLAG_MAP.get(key, [])
+        if flag_names and argv_has_flag(flag_names):
+            continue
+        setattr(args, key, value)
+
+
+def prompt_choice(prompt: str, choices: List[str], default: str) -> str:
+    choice_map = {item.lower(): item for item in choices}
+    while True:
+        value = input(f"{prompt} ({'/'.join(choices)}) [{default}]: ").strip()
+        if not value:
+            return default
+        key = value.lower()
+        if key in choice_map:
+            return choice_map[key]
+        print(f"Invalid choice: {value}")
+
+
+def prompt_yes_no(prompt: str, default: bool) -> bool:
+    default_text = "Y/n" if default else "y/N"
+    while True:
+        value = input(f"{prompt} ({default_text}): ").strip().lower()
+        if not value:
+            return default
+        if value in ("y", "yes"):
+            return True
+        if value in ("n", "no"):
+            return False
+        print(f"Invalid input: {value}")
+
+
+def run_wizard(args: argparse.Namespace) -> None:
+    if not sys.stdin.isatty():
+        raise SystemExit("Wizard mode requires an interactive terminal.")
+
+    print("PDF → Markdown Wizard\n")
+    use_preset = prompt_yes_no("Use a preset mode?", True)
+    if use_preset:
+        preset = prompt_choice(
+            "Select preset",
+            list(PRESET_CONFIGS.keys()),
+            "balanced-ocr",
+        )
+        apply_preset(args, preset)
+
+    mode = prompt_choice("Conversion mode", ["auto", "text", "ocr"], args.mode)
+    args.mode = mode
+
+    wants_tables = prompt_yes_no("Does the PDF contain many tables?", False)
+    if wants_tables:
+        args.table_mode = "auto"
+        args.table_backend = "auto"
+
+    scanned = prompt_yes_no("Is it a scanned/photographed PDF?", False)
+    if scanned:
+        args.mode = "ocr"
+        args.adaptive_dpi = True
+        args.preprocess = True
+
+    balance = prompt_choice(
+        "OCR quality vs speed",
+        ["quality", "balanced", "fast"],
+        "balanced",
+    )
+    if balance == "quality":
+        args.adaptive_dpi = True
+        args.ocr_quality = True
+    elif balance == "fast":
+        args.ocr_workers = max(1, min(args.ocr_workers, 2))
+        args.ocr_quality = False
+
+    if args.mode in ("auto", "ocr"):
+        api_key_hint = prompt_yes_no("Use OCR API from environment variable?", True)
+        if not api_key_hint and not args.api_key:
+            args.api_key = input("Enter OCR API key (comma-separated): ").strip() or None
 
 
 def parse_api_urls(primary: str, fallback: Optional[str]) -> List[str]:
@@ -2511,6 +2663,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="auto=extract text then OCR fallback, text=extract only, ocr=OCR only",
     )
     parser.add_argument(
+        "--preset",
+        default=None,
+        choices=list(PRESET_CONFIGS.keys()),
+        help="Apply a preset configuration",
+    )
+    parser.add_argument(
+        "--wizard",
+        action="store_true",
+        help="Run interactive wizard to configure common options",
+    )
+    parser.add_argument(
         "--pages", default="", help="Process only these pages, e.g. 1,3-5"
     )
     parser.add_argument("--skip-pages", default="", help="Skip pages, e.g. 2,10-12")
@@ -3056,6 +3219,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.preset:
+        apply_preset(args, args.preset)
+    if args.wizard:
+        run_wizard(args)
 
     pdf_path = Path(args.pdf)
     out_path = Path(args.out) if args.out else pdf_path.with_suffix(".md")

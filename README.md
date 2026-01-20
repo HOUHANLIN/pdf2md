@@ -29,6 +29,8 @@ OCR 渲染所需系统依赖（pdf2image）：
 python pdf_to_markdown.py input.pdf
 python pdf_to_markdown.py input.pdf --mode text
 python pdf_to_markdown.py input.pdf --mode ocr --api-key "$SILICONFLOW_API_KEY"
+python pdf_to_markdown.py input.pdf --preset balanced-ocr
+python pdf_to_markdown.py input.pdf --wizard
 ```
 
 ## 常用场景
@@ -57,6 +59,28 @@ python pdf_to_markdown.py input.pdf --json-out result.json --config-out config.j
 
 # 仅列出计划（不执行 OCR）
 python pdf_to_markdown.py input.pdf --dry-run
+```
+
+## 预设与分步式引导
+
+预设模式用于快速套用常见配置，避免记住大量参数：
+
+- `fast-text`：纯文本快速提取
+- `balanced-ocr`：文本优先 + OCR 兜底的平衡方案
+- `scan-ocr`：扫描件 OCR 强化
+- `table-heavy`：表格较多的文档
+- `economy`：降低并发和重试的低成本方案
+
+示例：
+
+```bash
+python pdf_to_markdown.py input.pdf --preset scan-ocr
+```
+
+分步式引导会以交互方式询问几个关键问题，自动选择模式与参数：
+
+```bash
+python pdf_to_markdown.py input.pdf --wizard
 ```
 
 ## 断点续跑与缓存
@@ -188,4 +212,3 @@ python pdf_to_markdown.py -h
 - [pdf2image](https://github.com/Belval/pdf2image) - PDF 转图片
 - [Pillow](https://github.com/python-pillow/Pillow) - 图像处理
 - [SiliconFlow](https://siliconflow.cn/) - OCR 服务支持
-
